@@ -13,6 +13,7 @@ pub struct DoubleDelimiterCodec {
     max_length: usize,
 }
 
+#[derive(Debug)]
 pub enum DoubleDelimiterCodecError {
     MaxChunkLengthExceeded,
     Io(Error),
@@ -101,5 +102,56 @@ impl Decoder for DoubleDelimiterCodec {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::DoubleDelimiterCodec;
+    use std::assert_matches;
+    use std::cmp::Ordering;
+    use std::io::{Error, ErrorKind};
+    use tokio_stream::StreamExt;
+    use tokio_test::io::Builder;
+    use tokio_util::codec::FramedRead;
+
+    #[tokio::test]
+    async fn test_chunks() {
+        let messages = Builder::new()
+            .read(
+                b"\
+        DoubleDelimiterCodec\nDoubleDelimiterCodec\n\n\
+        DoubleDelimiterCodec2\nDoubleDelimiterCodec2\n\n",
+            )
+            .build();
+        let first_message = b"DoubleDelimiterCodec\nDoubleDelimiterCodec\n\n";
+        let second_message = b"DoubleDelimiterCodec2\nDoubleDelimiterCodec2\n\n";
+
+        let mut reader = FramedRead::new(messages, DoubleDelimiterCodec::new(b'\n', b'\n'));
+
+        let bytes = reader.next().await.unwrap().unwrap();
+        let result = bytes.as_ref();
+        debug_assert_eq!(result.cmp(first_message), Ordering::Equal);
+
+        let bytes = reader.next().await.unwrap().unwrap();
+        let result = bytes.as_ref();
+        debug_assert_eq!(result.cmp(second_message), Ordering::Equal);
+    }
+
+    #[tokio::test]
+    async fn test_io_error_signalled() {
+        let ioe = Builder::new()
+            .read(b"aslkjdlk\n\n")
+            .read_error(Error::new(ErrorKind::BrokenPipe, "connection closed"))
+            .build();
+
+        let mut reader = FramedRead::new(ioe, DoubleDelimiterCodec::new(b'\n', b'\n'));
+
+        reader.next().await.unwrap().unwrap();
+        assert_matches!(
+            reader.next().await,
+            Some(Err(DoubleDelimiterCodecError::Io(_)))
+        );
     }
 }
