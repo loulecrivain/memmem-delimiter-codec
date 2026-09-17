@@ -13,6 +13,7 @@ name = "double_delimiter_codec"
 version = "0.1.0"
 dependencies = [
  "memchr",
+ "tokio",
  "tokio-util",
 ]
 

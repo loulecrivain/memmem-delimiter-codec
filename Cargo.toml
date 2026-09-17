@@ -6,3 +6,6 @@ edition = "2024"
 [dependencies]
 memchr = "2.8.3"
 tokio-util = { version = "0.7.19", features = ["codec"] }
+
+[dev-dependencies]
+tokio = "1.53.1"
