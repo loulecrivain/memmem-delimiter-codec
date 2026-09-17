@@ -1,5 +1,5 @@
 [package]
-name = "double_delimiter_codec"
+name = "memmem-delimiter-codec"
 version = "0.1.0"
 edition = "2024"
 
