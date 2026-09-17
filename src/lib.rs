@@ -1,13 +1,13 @@
-use memchr::memchr2;
+use memchr::memmem::Finder;
 use std::cmp;
 use std::io::Error;
 use tokio_util::bytes::{Buf, Bytes, BytesMut};
 use tokio_util::codec::Decoder;
 
 #[derive(Clone)]
-pub struct DoubleDelimiterCodec {
-    a: u8,
-    b: u8,
+pub struct MemMemDelimiterCodec<'a> {
+    finder: Finder<'a>,
+    delim_size: usize,
     is_discarding: bool,
     next_index: usize,
     max_length: usize,
@@ -25,44 +25,48 @@ impl From<Error> for DoubleDelimiterCodecError {
     }
 }
 
-impl DoubleDelimiterCodec {
-    pub fn new(a: u8, b: u8) -> Self {
-        DoubleDelimiterCodec {
-            a,
-            b,
+impl<'a> MemMemDelimiterCodec<'a> {
+    pub fn new<T: ?Sized + AsRef<[u8]>>(delimiter: &'a T) -> Self {
+        let finder = Finder::new(delimiter);
+        let delim_size = finder.needle().iter().len();
+
+        MemMemDelimiterCodec {
+            finder,
+            delim_size,
             is_discarding: false,
             next_index: 0,
             max_length: usize::MAX,
         }
     }
 
-    pub fn new_with_max_length(a: u8, b: u8, max_length: usize) -> Self {
-        DoubleDelimiterCodec {
+    pub fn new_with_max_length<T: ?Sized + AsRef<[u8]>>(
+        delimiter: &'a T,
+        max_length: usize,
+    ) -> Self {
+        MemMemDelimiterCodec {
             max_length,
-            ..DoubleDelimiterCodec::new(a, b)
+            ..MemMemDelimiterCodec::new(delimiter)
         }
     }
 }
 
-const DELIM_SIZE: usize = 2;
-
-impl Decoder for DoubleDelimiterCodec {
+impl Decoder for MemMemDelimiterCodec<'_> {
     type Item = Bytes;
     type Error = DoubleDelimiterCodecError;
 
     // implementation details shamelessly stolen from AnyDelimiterCodec
     fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         loop {
-            let read_to = cmp::min(self.max_length.saturating_add(DELIM_SIZE), buf.len());
+            let read_to = cmp::min(self.max_length.saturating_add(self.delim_size), buf.len());
             let slice = &buf[self.next_index..read_to];
 
-            let new_chunk_offset = memchr2(self.a, self.b, slice);
+            let new_chunk_offset = self.finder.find(slice);
 
             match (self.is_discarding, new_chunk_offset) {
                 (true, Some(offset)) => {
                     // some delimiter found, but we were discarding
                     // + DELIM_SIZE => chop off with delimiter
-                    buf.advance(offset + self.next_index + DELIM_SIZE);
+                    buf.advance(offset + self.next_index + self.delim_size);
                     self.is_discarding = false;
                     self.next_index = 0; // rewind to start as incriminated section was chopped
                     // no return, continue reading buffer in loop
@@ -83,7 +87,7 @@ impl Decoder for DoubleDelimiterCodec {
                     let new_chunk_index = offset + self.next_index;
                     self.next_index = 0;
                     // + DELIM_SIZE => message will contain delimiter
-                    let chunk = buf.split_to(new_chunk_index + DELIM_SIZE);
+                    let chunk = buf.split_to(new_chunk_index + self.delim_size);
 
                     return Ok(Some(chunk.freeze()));
                 }
@@ -108,7 +112,7 @@ impl Decoder for DoubleDelimiterCodec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DoubleDelimiterCodec;
+    use crate::MemMemDelimiterCodec;
     use std::assert_matches;
     use std::cmp::Ordering;
     use std::io::{Error, ErrorKind};
@@ -128,7 +132,7 @@ mod tests {
         let first_message = b"DoubleDelimiterCodec\nDoubleDelimiterCodec\n\n";
         let second_message = b"DoubleDelimiterCodec2\nDoubleDelimiterCodec2\n\n";
 
-        let mut reader = FramedRead::new(messages, DoubleDelimiterCodec::new(b'\n', b'\n'));
+        let mut reader = FramedRead::new(messages, MemMemDelimiterCodec::new(b"\n\n"));
 
         let bytes = reader.next().await.unwrap().unwrap();
         let result = bytes.as_ref();
@@ -146,7 +150,7 @@ mod tests {
             .read_error(Error::new(ErrorKind::BrokenPipe, "connection closed"))
             .build();
 
-        let mut reader = FramedRead::new(ioe, DoubleDelimiterCodec::new(b'\n', b'\n'));
+        let mut reader = FramedRead::new(ioe, MemMemDelimiterCodec::new(b"\n\n"));
 
         reader.next().await.unwrap().unwrap();
         assert_matches!(
